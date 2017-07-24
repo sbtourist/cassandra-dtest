@@ -483,6 +483,43 @@ class TestSecondaryIndexes(Tester):
         assert_one(session, """SELECT * FROM system."IndexInfo" WHERE table_name='k'""", ['k', 'idx'])
         assert_one(session, "SELECT * FROM k.t WHERE v = 1", [0, 1])
 
+    @since('4.0')
+    def test_index_is_not_rebuilt_at_restart(self):
+        """
+        @jira_ticket 
+
+        Tests the index is not rebuilt at restart if already built.
+        """
+
+        cluster = self.cluster
+        cluster.populate(1).start(wait_for_binary_proto=True)
+        node = cluster.nodelist()[0]
+
+        session = self.patient_cql_connection(node)
+        create_ks(session, 'k', 1)
+        session.execute("CREATE TABLE k.t (k int PRIMARY KEY, v int)")
+        session.execute("INSERT INTO k.t(k, v) VALUES (0, 1)")
+
+        debug("Create the index")
+        session.execute("CREATE INDEX idx ON k.t(v)")
+        time.sleep(10)
+        before_files = self._index_sstables_files(node, 'k', 't', 'idx')
+
+        debug("Verify the index is marked as built and it can be queried")
+        assert_one(session, """SELECT * FROM system."IndexInfo" WHERE table_name='k'""", ['k', 'idx'])
+        assert_one(session, "SELECT * FROM k.t WHERE v = 1", [0, 1])
+
+        debug("Restart the node and verify the index build is not submitted")
+        node.stop()
+        node.start(wait_for_binary_proto=True)
+        after_files = self._index_sstables_files(node, 'k', 't', 'idx')
+        self.assertEqual(before_files, after_files)
+
+        debug("Verify the index is still marked as built and it can be queried")
+        session = self.patient_cql_connection(node)
+        assert_one(session, """SELECT * FROM system."IndexInfo" WHERE table_name='k'""", ['k', 'idx'])
+        assert_one(session, "SELECT * FROM k.t WHERE v = 1", [0, 1])
+
     def test_multi_index_filtering_query(self):
         """
         asserts that having multiple indexes that cover all predicates still requires ALLOW FILTERING to also be present
